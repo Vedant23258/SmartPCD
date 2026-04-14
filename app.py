@@ -26,7 +26,7 @@ MODEL_PATH = ROOT_DIR / "models" / "svm_model.joblib"
 OUTPUT_DIR = ROOT_DIR / "outputs"
 TRAINING_HISTORY_PATH = OUTPUT_DIR / "training_history.json"
 PREDICTION_HISTORY_PATH = OUTPUT_DIR / "prediction_history.json"
-MIN_CONFIDENCE_THRESHOLD = 0.55
+MIN_CONFIDENCE_THRESHOLD = 0.30
 
 
 def get_dataset_summary(dataset_dir: Path) -> dict[str, int]:
@@ -299,24 +299,12 @@ def run_prediction_on_image(image: np.ndarray, source_name: str) -> dict[str, ob
     outputs = process_image(image)
     predicted_id, predicted_name, probabilities = predict_class(model, outputs["feature_vector"])
     max_confidence = float(np.max(probabilities)) if probabilities is not None else None
-
+    confidence_warning = None
     if max_confidence is not None and max_confidence < MIN_CONFIDENCE_THRESHOLD:
-        report_dict = {
-            "source": source_name,
-            "status": "uncertain",
-            "reason": (
-                f"Prediction confidence is too low ({max_confidence:.3f}). "
-                "Use a clearer road image or retrain with more balanced data."
-            ),
-            "confidence": round(max_confidence, 6),
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        return {
-            "status": "uncertain",
-            "reason": report_dict["reason"],
-            "confidence": max_confidence,
-            "report_json": json.dumps(report_dict, indent=2),
-        }
+        confidence_warning = (
+            f"Model confidence is low ({max_confidence:.3f}). "
+            "Showing the best available prediction, but treat it as tentative."
+        )
 
     overlay_rgb = create_overlay_image(image, outputs["defect_mask"])
     saved_paths = save_prediction_assets(
@@ -344,6 +332,7 @@ def run_prediction_on_image(image: np.ndarray, source_name: str) -> dict[str, ob
         "severity": str(outputs["severity"]),
         "health_score": health_score,
         "confidence": round(max_confidence, 4) if max_confidence is not None else None,
+        "confidence_warning": confidence_warning,
     }
     append_json_history(PREDICTION_HISTORY_PATH, history_entry)
 
@@ -359,6 +348,7 @@ def run_prediction_on_image(image: np.ndarray, source_name: str) -> dict[str, ob
         "health_score": health_score,
         "recommendation": recommendation,
         "confidence": max_confidence,
+        "confidence_warning": confidence_warning,
         "road_check": road_info,
     }
 
@@ -678,18 +668,6 @@ def render_prediction_results(result: dict[str, object], source_name: str) -> No
         )
         return
 
-    if result.get("status") == "uncertain":
-        st.warning(result["reason"])
-        if result.get("confidence") is not None:
-            st.metric("Model Confidence", f"{float(result['confidence']) * 100:.2f}%")
-        st.download_button(
-            "Download Uncertain Prediction Report",
-            data=result["report_json"],
-            file_name=f"{Path(source_name).stem}_uncertain_report.json",
-            mime="application/json",
-        )
-        return
-
     outputs = result["outputs"]
     probabilities = result["probabilities"]
 
@@ -717,6 +695,9 @@ def render_prediction_results(result: dict[str, object], source_name: str) -> No
         """,
         unsafe_allow_html=True,
     )
+
+    if result.get("confidence_warning"):
+        st.warning(result["confidence_warning"])
 
     image_tab1, image_tab2, image_tab3, image_tab4 = st.tabs(
         ["Overlay View", "Original", "Processed", "Defect Mask"]
